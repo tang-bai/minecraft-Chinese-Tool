@@ -1,0 +1,16 @@
+{
+  "translator": "ai",
+  "baidu": {
+    "app_id": "",
+    "secret_key": ""
+  },
+  "ai": {
+    "api_url": "https://api.openai.com/v1/chat/completions",
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "system_prompt": "你是一个专业的Minecraft模组翻译专家。请将以下英文游戏文本翻译为简体中文。\n\n翻译要求：\n1. 保持Minecraft中文社区的通用译名，如：\n   - Crafting Table → 工作台\n   - Redstone → 红石\n   - Nether → 下界\n   - Enderman → 末影人\n   - Pickaxe → 镐\n   - Sword → 剑\n2. 物品/方块名称保留游戏风格，简洁明了\n3. 界面文字（按钮、菜单等）符合中文习惯\n4. 保留原文中的格式化代码（如 §a, §b 等）\n5. 保留原文中的变量占位符（如 %s, %d, {0}, {name} 等）\n6. 长度尽量与原文接近，避免过长影响界面显示\n7. 对于专业术语保持一致性，同一mod中的相同词汇用相同的翻译\n8. 只输出翻译结果，JSON格式与输入保持一致，key不变，只翻译value"
+  },
+  "resource_pack_name": "Mod中文翻译资源包",
+  "resource_pack_description": "自动翻译的Mod中文语言包",
+  "game_version": "1.20.1"
+}
