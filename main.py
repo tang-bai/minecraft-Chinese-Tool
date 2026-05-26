@@ -17,6 +17,7 @@ from import_handler import import_from_path, merge_translations
 from cache import TranslationCache
 from translator import BaiduTranslator, AITranslator
 from resource_pack import create_resource_pack
+from ftbquests_translator import process_ftbquests
 
 
 # 项目根目录
@@ -147,8 +148,9 @@ def interactive_mode():
     print("  [1] 开始新汉化（扫描mod文件夹）")
     if temp_exists:
         print("  [2] 继续汉化temp文件夹中的未完成翻译")
-    print("  [3] 初始化配置文件")
-    print("  [4] 退出")
+    print("  [3] 翻译 FTB Quests 任务文本")
+    print("  [4] 初始化配置文件")
+    print("  [5] 退出")
     print()
 
     choice = input("请输入选项编号: ").strip()
@@ -159,9 +161,12 @@ def interactive_mode():
         continue_translate_temp(config)
         return
     elif choice == '3':
-        init_config()
+        run_ftbquests_translation(config)
         return
     elif choice == '4':
+        init_config()
+        return
+    elif choice == '5':
         print("已退出")
         return
     else:
@@ -648,6 +653,90 @@ def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None)
         sys.exit(1)
 
     # 等待用户确认后退出
+    print()
+    input("按回车键退出...")
+
+
+def run_ftbquests_translation(config: dict):
+    """FTB Quests 翻译流程"""
+    print_banner()
+    print("[FTB Quests 翻译模式] 翻译 snbt 任务文件\n")
+
+    # 选择翻译引擎
+    translator_type = config.get('translator', 'ai')
+    print(f"当前翻译引擎: {translator_type}")
+    print("  [1] AI翻译 (OpenAI兼容API)")
+    print("  [2] 百度翻译")
+    print("  [3] 使用当前配置")
+    print()
+
+    translator_choice = input("请选择翻译引擎 (1/2/3): ").strip()
+    if translator_choice == '1':
+        translator_type = 'ai'
+    elif translator_choice == '2':
+        translator_type = 'baidu'
+    elif translator_choice == '3':
+        pass
+    else:
+        print("[提示] 无效选项，使用当前配置")
+
+    config['translator'] = translator_type
+
+    # 输入 ftbquests 源目录路径
+    print()
+    print("请输入 FTB Quests 文件夹路径（包含 snbt 文件的目录）:")
+    print("  示例: C:\\Users\\xxx\\.minecraft\\config\\ftbquests")
+    quests_path = input("路径: ").strip().strip('"').strip("'")
+
+    if not quests_path:
+        print("[错误] 未输入路径，已退出")
+        return
+
+    if not os.path.isdir(quests_path):
+        print(f"[错误] 路径不存在: {quests_path}")
+        return
+
+    # 输出目录
+    output_dir = os.path.join(BASE_DIR, 'config', 'ftbquests')
+    os.makedirs(output_dir, exist_ok=True)
+
+    print()
+    print("=" * 50)
+    print(f"  源目录: {quests_path}")
+    print(f"  输出目录: {output_dir}")
+    print(f"  翻译引擎: {translator_type}")
+    print("=" * 50)
+    print()
+
+    confirm = input("确认开始翻译？(Y/n): ").strip().lower()
+    if confirm == 'n':
+        print("已取消")
+        return
+
+    # 创建翻译器和缓存
+    translator = create_translator(config)
+    cache = TranslationCache(CACHE_DIR)
+
+    print(f"\n[信息] 开始翻译 FTB Quests 文件...\n")
+
+    total_files, total_translated, total_cached = process_ftbquests(
+        quests_path, translator, cache, output_dir
+    )
+
+    # 保存缓存
+    cache.save_cache()
+
+    print("\n" + "=" * 60)
+    print("  ✅ FTB Quests 翻译完成！")
+    print("=" * 60)
+    print(f"\n  统计信息:")
+    print(f"    - 翻译文件数: {total_files}")
+    print(f"    - API翻译条目: {total_translated}")
+    print(f"    - 缓存命中条目: {total_cached}")
+    print(f"\n  输出目录: {output_dir}")
+    print(f"\n  使用方法: 将输出的 config/ftbquests 文件夹复制到")
+    print(f"  Minecraft 实例目录中覆盖原文件")
+
     print()
     input("按回车键退出...")
 
