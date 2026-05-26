@@ -131,22 +131,40 @@ def interactive_mode():
     # 加载配置
     config = load_config()
 
+    # 检查是否有临时文件夹中的翻译可继续（有zh_cn.json或en_us.json）
+    temp_exists = False
+    if os.path.isdir(TEMP_DIR):
+        for d in os.listdir(TEMP_DIR):
+            mod_path = os.path.join(TEMP_DIR, d)
+            if os.path.isdir(mod_path):
+                if os.path.isfile(os.path.join(mod_path, 'zh_cn.json')) or \
+                   os.path.isfile(os.path.join(mod_path, 'en_us.json')):
+                    temp_exists = True
+                    break
+
     # ===== 主菜单 =====
     print("请选择操作:")
-    print("  [1] 开始汉化（扫描mod文件夹）")
-    print("  [2] 初始化配置文件")
-    print("  [3] 退出")
+    print("  [1] 开始新汉化（扫描mod文件夹）")
+    if temp_exists:
+        print("  [2] 继续汉化temp文件夹中的未完成翻译")
+    print("  [3] 初始化配置文件")
+    print("  [4] 退出")
     print()
 
-    choice = input("请输入选项编号 (1/2/3): ").strip()
+    choice = input("请输入选项编号: ").strip()
 
-    if choice == '2':
-        init_config()
+    if choice == '1':
+        pass  # 继续执行新汉化流程
+    elif choice == '2' and temp_exists:
+        continue_translate_temp(config)
         return
     elif choice == '3':
+        init_config()
+        return
+    elif choice == '4':
         print("已退出")
         return
-    elif choice != '1':
+    else:
         print("[错误] 无效选项")
         return
 
@@ -228,6 +246,182 @@ def interactive_mode():
     run_process(config, mods_path, import_pack)
 
 
+def continue_translate_temp(config: dict):
+    """继续汉化temp文件夹中未完成的翻译"""
+    print_banner()
+    print("[继续汉化模式] 处理 temp 文件夹中的翻译文件\n")
+
+    # 选择翻译引擎
+    translator_type = config.get('translator', 'ai')
+    print(f"当前翻译引擎: {translator_type}")
+    print("  [1] AI翻译 (OpenAI兼容API)")
+    print("  [2] 百度翻译")
+    print("  [3] 使用当前配置")
+    print()
+
+    translator_choice = input("请选择翻译引擎 (1/2/3): ").strip()
+    if translator_choice == '1':
+        translator_type = 'ai'
+    elif translator_choice == '2':
+        translator_type = 'baidu'
+    elif translator_choice == '3':
+        pass
+    else:
+        print("[提示] 无效选项，使用当前配置")
+
+    config['translator'] = translator_type
+
+    # 创建翻译器和缓存
+    translator = create_translator(config)
+    cache = TranslationCache(CACHE_DIR)
+
+    # 扫描temp文件夹，收集所有有en_us.json或zh_cn.json的mod目录
+    mod_dirs = []
+    for d in os.listdir(TEMP_DIR):
+        mod_path = os.path.join(TEMP_DIR, d)
+        if not os.path.isdir(mod_path):
+            continue
+        zh_cn_path = os.path.join(mod_path, 'zh_cn.json')
+        en_us_path = os.path.join(mod_path, 'en_us.json')
+        if os.path.isfile(zh_cn_path) or os.path.isfile(en_us_path):
+            mod_dirs.append((d, mod_path))
+
+    if not mod_dirs:
+        print("[信息] temp文件夹中没有找到翻译文件")
+        return
+
+    print(f"\n[信息] 找到 {len(mod_dirs)} 个mod的翻译文件\n")
+
+    # 先从en_us.json创建缺失的zh_cn.json（用英文原文填充，后续翻译覆盖）
+    for modid, mod_path in mod_dirs:
+        en_us_path = os.path.join(mod_path, 'en_us.json')
+        zh_cn_path = os.path.join(mod_path, 'zh_cn.json')
+        if os.path.isfile(en_us_path) and not os.path.isfile(zh_cn_path):
+            try:
+                with open(en_us_path, 'r', encoding='utf-8') as f:
+                    en_us_data = json.load(f)
+                # 创建zh_cn.json，值为空字符串，标记为待翻译
+                zh_cn_data = {}
+                for key, value in en_us_data.items():
+                    if isinstance(value, str):
+                        zh_cn_data[key] = value  # 先填入英文，后续翻译会覆盖
+                    else:
+                        zh_cn_data[key] = value
+                with open(zh_cn_path, 'w', encoding='utf-8') as f:
+                    json.dump(zh_cn_data, f, ensure_ascii=False, indent=2)
+                print(f"  [新建] {modid}/zh_cn.json ← 从 en_us.json 创建 ({len(zh_cn_data)} 条)")
+            except Exception as e:
+                print(f"  [错误] {modid} - 创建zh_cn.json失败: {e}")
+
+    total_translated = 0
+    final_translations = {}
+
+    for modid, mod_path in mod_dirs:
+        zh_cn_path = os.path.join(mod_path, 'zh_cn.json')
+        print(f"--- 处理 mod: {modid} ---")
+
+        # 跳过没有zh_cn.json的mod（可能只有en_us.json且创建失败）
+        if not os.path.isfile(zh_cn_path):
+            print(f"  [跳过] zh_cn.json 不存在")
+            continue
+
+        # 加载当前的zh_cn.json
+        try:
+            with open(zh_cn_path, 'r', encoding='utf-8') as f:
+                zh_cn_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            print(f"  [错误] 加载失败: {e}")
+            continue
+
+        # 加载en_us.json（如果存在）用于对比
+        en_us_path = os.path.join(os.path.dirname(zh_cn_path), 'en_us.json')
+        en_us_data = {}
+        if os.path.isfile(en_us_path):
+            try:
+                with open(en_us_path, 'r', encoding='utf-8') as f:
+                    en_us_data = json.load(f)
+            except Exception:
+                pass
+
+        # 找出未翻译的条目
+        # 条件：值为空/None/list/空字符串，或者值与en_us.json中的英文相同（未真正翻译）
+        untranslated = {}
+        for key, value in zh_cn_data.items():
+            if isinstance(value, list):
+                continue
+            if not isinstance(value, str) or not value or value.strip() == '':
+                untranslated[key] = key
+            elif en_us_data and key in en_us_data:
+                # 如果zh_cn的值与en_us的值完全相同，说明未翻译
+                en_value = en_us_data[key]
+                if isinstance(en_value, str) and value.strip() == en_value.strip():
+                    untranslated[key] = value
+
+        if not untranslated:
+            print(f"  [完成] 所有 {len(zh_cn_data)} 条已翻译，跳过")
+            final_translations[modid] = zh_cn_data
+            continue
+
+        print(f"  总条目: {len(zh_cn_data)}, 未翻译: {len(untranslated)}")
+
+        # 先查缓存
+        cached, uncached = cache.get_multiple(untranslated)
+        zh_cn_data.update(cached)
+        print(f"  从缓存匹配: {len(cached)} 条")
+        print(f"  需要API翻译: {len(uncached)} 条")
+
+        # 调用翻译API
+        if uncached:
+            print(f"  开始翻译 {len(uncached)} 条文本...")
+            # 对于key即value的情况，翻译value
+            to_translate = {k: v for k, v in uncached.items()}
+            translated = translator.translate(to_translate)
+            zh_cn_data.update(translated)
+            total_translated += len(translated)
+            cache.update_from_result(to_translate, translated)
+            print(f"  翻译完成: {len(translated)}/{len(uncached)} 条")
+
+        # 保存更新后的zh_cn.json
+        with open(zh_cn_path, 'w', encoding='utf-8') as f:
+            json.dump(zh_cn_data, f, ensure_ascii=False, indent=2)
+        print(f"  [保存] {zh_cn_path}")
+
+        final_translations[modid] = zh_cn_data
+
+    # 保存缓存
+    cache.save_cache()
+    print(f"\n[信息] 翻译缓存已保存 ({cache.size} 条)")
+
+    # 打包资源包
+    pack_name = config.get('resource_pack_name', 'Mod中文翻译资源包')
+    output_filename = f"{pack_name}.zip"
+    output_path = os.path.join(BASE_DIR, output_filename)
+    pack_description = config.get('resource_pack_description', '自动翻译的Mod中文语言包')
+    game_version = config.get('game_version', '1.20.1')
+
+    print(f"\n[Step 4/4] 打包资源包...")
+
+    success = create_resource_pack(
+        translations=final_translations,
+        output_path=output_path,
+        pack_description=pack_description,
+        game_version=game_version
+    )
+
+    if success:
+        print("\n" + "=" * 60)
+        print("  ✅ 继续汉化完成！")
+        print("=" * 60)
+        print(f"\n  新翻译条目: {total_translated}")
+        print(f"  输出文件: {output_path}")
+    else:
+        print("\n[错误] 资源包创建失败")
+        sys.exit(1)
+
+    print()
+    input("按回车键退出...")
+
+
 def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None):
     """核心处理流程"""
     # 确定输出文件名
@@ -264,7 +458,79 @@ def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None)
 
     if import_pack:
         print(f"  导入路径: {import_pack}")
-        existing_translations = import_from_path(import_pack)
+
+        # 获取temp中已有的modid列表（来自jar提取）
+        existing_temp_modids = set()
+        if os.path.isdir(TEMP_DIR):
+            for d in os.listdir(TEMP_DIR):
+                if os.path.isdir(os.path.join(TEMP_DIR, d)):
+                    existing_temp_modids.add(d)
+
+        # 判断导入的是文件夹还是zip
+        if os.path.isdir(import_pack):
+            # 判断是标准资源包文件夹(有assets目录)还是直接modid文件夹
+            assets_dir = os.path.join(import_pack, 'assets')
+            if os.path.isdir(assets_dir):
+                # 标准资源包结构: assets/<modid>/lang/zh_cn.json
+                for modid in os.listdir(assets_dir):
+                    # 只复制temp中已有的modid
+                    if modid not in existing_temp_modids:
+                        continue
+                    lang_dir = os.path.join(assets_dir, modid, 'lang')
+                    if not os.path.isdir(lang_dir):
+                        continue
+                    zh_cn_src = os.path.join(lang_dir, 'zh_cn.json')
+                    if os.path.isfile(zh_cn_src):
+                        zh_cn_dst = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+                        if os.path.isfile(zh_cn_dst):
+                            print(f"  [跳过] {modid} - temp中已存在zh_cn.json")
+                            continue
+                        shutil.copy2(zh_cn_src, zh_cn_dst)
+                        print(f"  [复制] {modid}/zh_cn.json → {zh_cn_dst}")
+                        try:
+                            with open(zh_cn_src, 'r', encoding='utf-8') as f:
+                                existing_translations[modid] = json.load(f)
+                        except Exception:
+                            pass
+            else:
+                # 直接modid文件夹结构: <modid>/zh_cn.json
+                for modid in os.listdir(import_pack):
+                    # 只复制temp中已有的modid
+                    if modid not in existing_temp_modids:
+                        continue
+                    mod_src_path = os.path.join(import_pack, modid)
+                    if not os.path.isdir(mod_src_path):
+                        continue
+                    zh_cn_src = os.path.join(mod_src_path, 'zh_cn.json')
+                    zh_cn_src_alt = os.path.join(mod_src_path, 'lang', 'zh_cn.json')
+                    if not os.path.isfile(zh_cn_src) and os.path.isfile(zh_cn_src_alt):
+                        zh_cn_src = zh_cn_src_alt
+                    if os.path.isfile(zh_cn_src):
+                        zh_cn_dst = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+                        if os.path.isfile(zh_cn_dst):
+                            print(f"  [跳过] {modid} - temp中已存在zh_cn.json")
+                            continue
+                        shutil.copy2(zh_cn_src, zh_cn_dst)
+                        print(f"  [复制] {modid}/zh_cn.json → {zh_cn_dst}")
+                        try:
+                            with open(zh_cn_src, 'r', encoding='utf-8') as f:
+                                existing_translations[modid] = json.load(f)
+                        except Exception:
+                            pass
+        else:
+            # zip形式：解析并只复制temp中已有的modid
+            imported = import_from_path(import_pack)
+            for modid, zh_cn_data in imported.items():
+                if modid not in existing_temp_modids:
+                    continue
+                zh_cn_dst = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+                if os.path.isfile(zh_cn_dst):
+                    print(f"  [跳过] {modid} - temp中已存在zh_cn.json")
+                    continue
+                with open(zh_cn_dst, 'w', encoding='utf-8') as f:
+                    json.dump(zh_cn_data, f, ensure_ascii=False, indent=2)
+                print(f"  [复制] {modid}/zh_cn.json → {zh_cn_dst}")
+                existing_translations[modid] = zh_cn_data
     else:
         print("  未指定导入汉化包，跳过")
 
@@ -280,6 +546,19 @@ def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None)
 
     for modid, en_us_path in extracted_mods.items():
         print(f"\n--- 处理 mod: {modid} ---")
+
+        # 检查temp中是否已有zh_cn.json（来自导入的汉化）
+        zh_cn_existing_path = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+        if os.path.isfile(zh_cn_existing_path):
+            try:
+                with open(zh_cn_existing_path, 'r', encoding='utf-8') as f:
+                    existing_zh_cn = json.load(f)
+                if existing_zh_cn:
+                    print(f"  [跳过] temp中已有zh_cn.json ({len(existing_zh_cn)} 条)")
+                    final_translations[modid] = existing_zh_cn
+                    continue
+            except Exception:
+                pass
 
         # 加载en_us.json
         en_us_data = load_en_us_json(en_us_path)
@@ -325,14 +604,18 @@ def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None)
 
         final_translations[modid] = zh_cn_result
 
+        # 保存 zh_cn.json 到临时文件夹
+        zh_cn_temp_path = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+        os.makedirs(os.path.dirname(zh_cn_temp_path), exist_ok=True)
+        with open(zh_cn_temp_path, 'w', encoding='utf-8') as f:
+            json.dump(zh_cn_result, f, ensure_ascii=False, indent=2)
+        print(f"  [保存] zh_cn.json → {zh_cn_temp_path}")
+
     # 保存缓存
     cache.save_cache()
     print(f"\n[信息] 翻译缓存已保存 ({cache.size} 条)")
 
-    # 删除临时文件夹中的en_us.json
-    print("\n[信息] 清理临时文件...")
-    shutil.rmtree(TEMP_DIR, ignore_errors=True)
-    print("  临时文件已清理")
+    print("\n[信息] 临时文件已保留在 temp 文件夹中（含 en_us.json 和 zh_cn.json）")
 
     # ========== Step 4: 打包资源包 ==========
     print(f"\n[Step 4/4] 打包资源包...")
@@ -358,6 +641,7 @@ def run_process(config: dict, mods_path: str, import_pack: Optional[str] = None)
         print(f"    - 从缓存匹配: {total_cached}")
         print(f"    - API翻译: {total_translated}")
         print(f"\n  输出文件: {output_path}")
+        print(f"  临时文件: {os.path.join(TEMP_DIR, '<modid>', 'zh_cn.json')}")
         print(f"\n  使用方法: 将资源包放入 .minecraft/resourcepacks 文件夹中")
     else:
         print("\n[错误] 资源包创建失败")
@@ -540,14 +824,26 @@ def main():
 
         final_translations[modid] = zh_cn_result
 
+        # 保存 zh_cn.json 到临时文件夹
+        zh_cn_temp_path = os.path.join(TEMP_DIR, modid, 'zh_cn.json')
+        os.makedirs(os.path.dirname(zh_cn_temp_path), exist_ok=True)
+        with open(zh_cn_temp_path, 'w', encoding='utf-8') as f:
+            json.dump(zh_cn_result, f, ensure_ascii=False, indent=2)
+        print(f"  [保存] zh_cn.json → {zh_cn_temp_path}")
+
     # 保存缓存
     cache.save_cache()
     print(f"\n[信息] 翻译缓存已保存 ({cache.size} 条)")
 
-    # 删除临时文件夹中的en_us.json
-    print("\n[信息] 清理临时文件...")
-    shutil.rmtree(TEMP_DIR, ignore_errors=True)
-    print("  临时文件已清理")
+    # 清理临时文件夹中的en_us.json（保留zh_cn.json）
+    print("\n[信息] 清理临时文件中的en_us.json...")
+    for modid_dir in os.listdir(TEMP_DIR):
+        modid_path = os.path.join(TEMP_DIR, modid_dir)
+        if os.path.isdir(modid_path):
+            en_us_file = os.path.join(modid_path, 'en_us.json')
+            if os.path.isfile(en_us_file):
+                os.remove(en_us_file)
+    print("  en_us.json 已清理，zh_cn.json 已保留在 temp 文件夹中")
 
     # ========== Step 4: 打包资源包 ==========
     print(f"\n[Step 4/4] 打包资源包...")
@@ -573,6 +869,7 @@ def main():
         print(f"    - 从缓存匹配: {total_cached}")
         print(f"    - API翻译: {total_translated}")
         print(f"\n  输出文件: {output_path}")
+        print(f"  临时文件: {os.path.join(TEMP_DIR, '<modid>', 'zh_cn.json')}")
         print(f"\n  使用方法: 将资源包放入 .minecraft/resourcepacks 文件夹中")
     else:
         print("\n[错误] 资源包创建失败")
